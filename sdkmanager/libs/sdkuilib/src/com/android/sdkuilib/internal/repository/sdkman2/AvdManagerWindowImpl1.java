@@ -150,7 +150,14 @@ public class AvdManagerWindowImpl1 {
     }
 
     private void createShell() {
-        mShell = new Shell(mParentShell, SWT.SHELL_TRIM | SWT.APPLICATION_MODAL);
+        // The AVD Manager must use a shell trim when standalone
+        // or a dialog trim when invoked from somewhere else.
+        int style = SWT.SHELL_TRIM;
+        if (mContext != AvdInvocationContext.STANDALONE) {
+            style |= SWT.APPLICATION_MODAL;
+        }
+
+        mShell = new Shell(mParentShell, style);
         mShell.addDisposeListener(new DisposeListener() {
             public void widgetDisposed(DisposeEvent e) {
                 ShellSizeAndPos.saveSizeAndPos(mShell, SIZE_POS_PREFIX);
@@ -183,6 +190,7 @@ public class AvdManagerWindowImpl1 {
         mAvdPage.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1));
     }
 
+    @SuppressWarnings("unused") // MenuBarWrapper works using side effects
     private void createMenuBar() {
 
         if (mContext != AvdInvocationContext.STANDALONE) {

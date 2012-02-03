@@ -19,10 +19,12 @@ package com.android.sdklib.internal.repository;
 import com.android.annotations.VisibleForTesting;
 import com.android.annotations.VisibleForTesting.Visibility;
 import com.android.sdklib.repository.SdkAddonsListConstants;
+import com.android.sdklib.repository.SdkRepoConstants;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
@@ -255,6 +257,20 @@ public class AddonsListFetcher {
             // Parse the old document using a non namespace aware builder
             factory.setNamespaceAware(false);
             DocumentBuilder builder = factory.newDocumentBuilder();
+
+            // We don't want the default handler which prints errors to stderr.
+            builder.setErrorHandler(new ErrorHandler() {
+                public void warning(SAXParseException e) throws SAXException {
+                // pass
+                }
+                public void fatalError(SAXParseException e) throws SAXException {
+                    throw e;
+                }
+                public void error(SAXParseException e) throws SAXException {
+                    throw e;
+                }
+            });
+
             doc = builder.parse(xml);
 
             // Prepare a new document using a namespace aware builder
@@ -429,6 +445,13 @@ public class AddonsListFetcher {
     @VisibleForTesting(visibility=Visibility.PRIVATE)
     protected Site[] parseAddonsList(Document doc, String nsUri, ITaskMonitor monitor) {
 
+        String baseUrl = System.getenv("SDK_TEST_BASE_URL");            //$NON-NLS-1$
+        if (baseUrl != null) {
+            if (baseUrl.length() <= 0 || !baseUrl.endsWith("/")) {      //$NON-NLS-1$
+                baseUrl = null;
+            }
+        }
+
         Node root = getFirstChild(doc, nsUri, SdkAddonsListConstants.NODE_SDK_ADDONS_LIST);
         if (root != null) {
             ArrayList<Site> sites = new ArrayList<Site>();
@@ -446,6 +469,12 @@ public class AddonsListFetcher {
                     if (name != null && url != null) {
                         String strUrl  = url.getTextContent().trim();
                         String strName = name.getTextContent().trim();
+
+                        if (baseUrl != null &&
+                                strUrl.startsWith(SdkRepoConstants.URL_GOOGLE_SDK_SITE)) {
+                            strUrl = baseUrl +
+                                   strUrl.substring(SdkRepoConstants.URL_GOOGLE_SDK_SITE.length());
+                        }
 
                         if (strUrl.length() > 0 && strName.length() > 0) {
                             sites.add(new Site(strUrl, strName));

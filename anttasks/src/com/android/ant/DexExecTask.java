@@ -30,7 +30,7 @@ import java.util.List;
 /**
  * Custom task to execute dx while handling dependencies.
  */
-public class DexExecTask extends BaseTask {
+public class DexExecTask extends SingleDependencyTask {
 
     private String mExecutable;
     private String mOutput;
@@ -129,7 +129,8 @@ public class DexExecTask extends BaseTask {
         String depFile = mOutput + ".d";
 
         // get InputPath with no extension restrictions
-        List<InputPath> inputPaths = getInputPaths(paths, null /*extensionsToCheck*/);
+        List<InputPath> inputPaths = getInputPaths(paths, null /*extensionsToCheck*/,
+                null /*factory*/);
 
         if (initDependencies(depFile, inputPaths) && dependenciesHaveChanged() == false) {
             System.out.println(

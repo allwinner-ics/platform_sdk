@@ -34,8 +34,8 @@ import com.android.sdkuilib.internal.tasks.ProgressView;
 import com.android.sdkuilib.internal.tasks.ProgressViewFactory;
 import com.android.sdkuilib.internal.widgets.ImgDisabledButton;
 import com.android.sdkuilib.internal.widgets.ToggleButton;
-import com.android.sdkuilib.repository.ISdkChangeListener;
 import com.android.sdkuilib.repository.AvdManagerWindow.AvdInvocationContext;
+import com.android.sdkuilib.repository.ISdkChangeListener;
 import com.android.sdkuilib.repository.SdkUpdaterWindow.SdkInvocationContext;
 import com.android.sdkuilib.ui.GridDataBuilder;
 import com.android.sdkuilib.ui.GridLayoutBuilder;
@@ -165,7 +165,14 @@ public class SdkUpdaterWindowImpl2 implements ISdkUpdaterWindow {
     }
 
     private void createShell() {
-        mShell = new Shell(mParentShell, SWT.SHELL_TRIM | SWT.APPLICATION_MODAL);
+        // The SDK Manager must use a shell trim when standalone
+        // or a dialog trim when invoked from somewhere else.
+        int style = SWT.SHELL_TRIM;
+        if (mContext != SdkInvocationContext.STANDALONE) {
+            style |= SWT.APPLICATION_MODAL;
+        }
+
+        mShell = new Shell(mParentShell, style);
         mShell.addDisposeListener(new DisposeListener() {
             public void widgetDisposed(DisposeEvent e) {
                 ShellSizeAndPos.saveSizeAndPos(mShell, SIZE_POS_PREFIX);
@@ -229,6 +236,7 @@ public class SdkUpdaterWindowImpl2 implements ISdkUpdaterWindow {
         });
     }
 
+    @SuppressWarnings("unused") // MenuItem works using side effects
     private void createMenuBar() {
 
         Menu menuBar = new Menu(mShell, SWT.BAR);

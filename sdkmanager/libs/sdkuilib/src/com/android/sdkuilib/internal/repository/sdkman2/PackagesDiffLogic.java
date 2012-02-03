@@ -17,13 +17,18 @@
 package com.android.sdkuilib.internal.repository.sdkman2;
 
 import com.android.sdklib.IAndroidTarget;
+import com.android.sdklib.SdkConstants;
+import com.android.sdklib.internal.repository.ExtraPackage;
 import com.android.sdklib.internal.repository.IPackageVersion;
 import com.android.sdklib.internal.repository.Package;
 import com.android.sdklib.internal.repository.PlatformPackage;
 import com.android.sdklib.internal.repository.PlatformToolPackage;
 import com.android.sdklib.internal.repository.SdkSource;
+import com.android.sdklib.internal.repository.SystemImagePackage;
 import com.android.sdklib.internal.repository.ToolPackage;
 import com.android.sdklib.internal.repository.Package.UpdateInfo;
+import com.android.sdklib.repository.SdkRepoConstants;
+import com.android.sdklib.util.SparseArray;
 import com.android.sdkuilib.internal.repository.UpdaterData;
 import com.android.sdkuilib.internal.repository.sdkman2.PkgItem.PkgState;
 
@@ -33,11 +38,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -78,23 +81,24 @@ class PackagesDiffLogic {
 
     /**
      * Mark all new and update PkgItems as checked.
-     * <p/>
-     * Try to be smart and check whether any platform is installed.
-     * The heuristic is:
-     * <ul>
-     * <li> For extras with no platform dependency, or for tools & platform-tools,
-     *          just select new and updates.
-     * <li> For anything that depends on a platform:
-     * <li> Always select the top platform and all its packages.
-     * <li> If some platform is partially installed, selected anything new/update for it.
-     * </ul>
+     *
+     * @param selectNew If true, select all new packages
+     * @param selectUpdates If true, select all update packages
+     * @param selectTop If true, select the top platform. If the top platform has nothing installed,
+     *   select all items in it; if it is partially installed, at least select the platform and
+     *   system images if none of the system images are installed.
+     * @param currentPlatform The {@link SdkConstants#currentPlatform()} value.
      */
-    public void checkNewUpdateItems(boolean selectNew, boolean selectUpdates) {
+    public void checkNewUpdateItems(
+            boolean selectNew,
+            boolean selectUpdates,
+            boolean selectTop,
+            int currentPlatform) {
         int maxApi = 0;
         Set<Integer> installedPlatforms = new HashSet<Integer>();
-        Map<Integer, List<PkgItem>> platformItems = new HashMap<Integer, List<PkgItem>>();
+        SparseArray<List<PkgItem>> platformItems = new SparseArray<List<PkgItem>>();
 
-        // sort items in platforms... directly deal with items with no platform
+        // sort items in platforms... directly deal with new/update items
         for (PkgItem item : getAllPkgItems(true /*byApi*/, true /*bySource*/)) {
             if (!item.hasCompatibleArchive()) {
                 // Ignore items that have no archive compatible with the current platform.
@@ -109,47 +113,119 @@ class PackagesDiffLogic {
                 api = ((IPackageVersion) p).getVersion().getApiLevel();
             }
 
-            if (api > 0) {
+            if (selectTop && api > 0) {
+                // Keep track of the max api seen
                 maxApi = Math.max(maxApi, api);
 
-                // keep track of what platform is currently installed and its items
+                // keep track of what platform is currently installed (that is, has at least
+                // one thing installed.)
                 if (item.getState() == PkgState.INSTALLED) {
                     installedPlatforms.add(api);
                 }
+
+                // for each platform, collect all its related item for later use below.
                 List<PkgItem> items = platformItems.get(api);
                 if (items == null) {
                     platformItems.put(api, items = new ArrayList<PkgItem>());
                 }
                 items.add(item);
-            } else {
-                // not a plaform package...
-                if ((selectNew && item.getState() == PkgState.NEW) ||
-                        (selectUpdates && item.hasUpdatePkg())) {
-                    item.setChecked(true);
-                }
+            }
+
+            if ((selectNew && item.getState() == PkgState.NEW) ||
+                    (selectUpdates && item.hasUpdatePkg())) {
+                item.setChecked(true);
             }
         }
 
-        // If there are some platforms installed. Pickup anything new in them.
-        for (Integer api : installedPlatforms) {
-            List<PkgItem> items = platformItems.get(api);
-            if (items != null) {
+        List<PkgItem> items = platformItems.get(maxApi);
+        if (selectTop && maxApi > 0 && items != null) {
+            if (!installedPlatforms.contains(maxApi)) {
+                // If the top platform has nothing installed at all, select everything in it
                 for (PkgItem item : items) {
-                    if ((selectNew && item.getState() == PkgState.NEW) ||
-                            (selectUpdates && item.hasUpdatePkg())) {
+                    if (item.getState() == PkgState.NEW || item.hasUpdatePkg()) {
                         item.setChecked(true);
+                    }
+                }
+
+            } else {
+                // The top platform has at least one thing installed.
+
+                // First make sure the platform package itself is installed, or select it.
+                for (PkgItem item : items) {
+                     Package p = item.getMainPackage();
+                     if (p instanceof PlatformPackage && item.getState() == PkgState.NEW) {
+                         item.setChecked(true);
+                         break;
+                     }
+                }
+
+                // Check we have at least one system image installed, otherwise select them
+                boolean hasSysImg = false;
+                for (PkgItem item : items) {
+                    Package p = item.getMainPackage();
+                    if (p instanceof PlatformPackage && item.getState() == PkgState.INSTALLED) {
+                        if (item.hasUpdatePkg() && item.isChecked()) {
+                            // If the installed platform is schedule for update, look for the
+                            // system image in the update package, not the current one.
+                            p = item.getUpdatePkg();
+                            if (p instanceof PlatformPackage) {
+                                hasSysImg = ((PlatformPackage) p).getIncludedAbi() != null;
+                            }
+                        } else {
+                            // Otherwise look into the currently installed platform
+                            hasSysImg = ((PlatformPackage) p).getIncludedAbi() != null;
+                        }
+                        if (hasSysImg) {
+                            break;
+                        }
+                    }
+                    if (p instanceof SystemImagePackage && item.getState() == PkgState.INSTALLED) {
+                        hasSysImg = true;
+                        break;
+                    }
+                }
+                if (!hasSysImg) {
+                    // No system image installed.
+                    // Try whether the current platform or its update would bring one.
+
+                    for (PkgItem item : items) {
+                         Package p = item.getMainPackage();
+                         if (p instanceof PlatformPackage) {
+                             if (item.getState() == PkgState.NEW &&
+                                     ((PlatformPackage) p).getIncludedAbi() != null) {
+                                 item.setChecked(true);
+                                 hasSysImg = true;
+                             } else if (item.hasUpdatePkg()) {
+                                 p = item.getUpdatePkg();
+                                 if (p instanceof PlatformPackage &&
+                                         ((PlatformPackage) p).getIncludedAbi() != null) {
+                                     item.setChecked(true);
+                                     hasSysImg = true;
+                                 }
+                             }
+                         }
+                    }
+                }
+                if (!hasSysImg) {
+                    // No system image in the platform, try a system image package
+                    for (PkgItem item : items) {
+                        Package p = item.getMainPackage();
+                        if (p instanceof SystemImagePackage && item.getState() == PkgState.NEW) {
+                            item.setChecked(true);
+                        }
                     }
                 }
             }
         }
 
-        // Whether we have platforms installed or not, select everything from the top platform.
-        if (maxApi > 0) {
-            List<PkgItem> items = platformItems.get(maxApi);
-            if (items != null) {
-                for (PkgItem item : items) {
-                    if ((selectNew && item.getState() == PkgState.NEW) ||
-                            (selectUpdates && item.hasUpdatePkg())) {
+        if (selectTop && currentPlatform == SdkConstants.PLATFORM_WINDOWS) {
+            // On Windows, we'll also auto-select the USB driver
+            for (PkgItem item : getAllPkgItems(true /*byApi*/, true /*bySource*/)) {
+                Package p = item.getMainPackage();
+                if (p instanceof ExtraPackage && item.getState() == PkgState.NEW) {
+                    ExtraPackage ep = (ExtraPackage) p;
+                    if (ep.getVendor().equals("google") &&          //$NON-NLS-1$
+                            ep.getPath().equals("usb_driver")) {    //$NON-NLS-1$
                         item.setChecked(true);
                     }
                 }
@@ -346,10 +422,10 @@ class PackagesDiffLogic {
                 Package newPkg = setContainsLocalPackage(newPackages, item.getMainPackage());
                 if (newPkg != null) {
                     removePackageFromSet(unusedPackages, newPkg);
+                    cat.setUnused(false);
                     if (item.getState() == PkgState.NEW) {
                         // This item has a main package that is now installed.
                         replace(items, i, new PkgItem(newPkg, PkgState.INSTALLED));
-                        cat.setUnused(false);
                         hasChanged = true;
                     }
                 }
@@ -569,14 +645,14 @@ class PackagesDiffLogic {
             // Object identity, so definitely the same source. Accept it.
             return true;
 
+        } else if (currentSource != null && currentSource.equals(newItemSource)) {
+            // Same source. Accept it.
+            return true;
+
         } else if (currentSource != null && newItemSource != null &&
                 !currentSource.getClass().equals(newItemSource.getClass())) {
             // Both sources don't have the same type (e.g. sdk repository versus add-on repository)
             return false;
-
-        } else if (currentSource != null && currentSource.equals(newItemSource)) {
-            // Same source. Accept it.
-            return true;
 
         } else if (currentSource == null && currentItem.getState() == PkgState.INSTALLED) {
             // Accept it.
@@ -587,29 +663,39 @@ class PackagesDiffLogic {
         } else if (currentSource != null && currentSource.getUrl().startsWith("file://")) {
             // Heuristic: Probably a manual local install. Accept it.
             return true;
-
-        } else {
-            // Reject the source mismatch. The idea is that if two remote repositories
-            // have similar packages, we don't want to merge them together and have
-            // one hide the other. This is a design error from the repository owners
-            // and we want the case to be blatant so that we can get it fixed.
-
-            if (currentSource != null && newItemSource != null) {
-                try {
-                    URL url1 = new URL(currentSource.getUrl());
-                    URL url2 = new URL(newItemSource.getUrl());
-
-                    // Make an exception if both URLs have the same host name & domain name.
-                    if (url1.sameFile(url2) || url1.getHost().equals(url2.getHost())) {
-                        return true;
-                    }
-                } catch (Exception ignore) {
-                    // Ignore MalformedURLException or other exceptions
-                }
-            }
-
-            return false;
         }
+
+        // Reject the source mismatch. The idea is that if two remote repositories
+        // have similar packages, we don't want to merge them together and have
+        // one hide the other. This is a design error from the repository owners
+        // and we want the case to be blatant so that we can get it fixed.
+
+        if (currentSource != null && newItemSource != null) {
+            try {
+                String str1 = rewriteUrl(currentSource.getUrl());
+                String str2 = rewriteUrl(newItemSource.getUrl());
+
+                URL url1 = new URL(str1);
+                URL url2 = new URL(str2);
+
+                // Make an exception if both URLs have the same host name & domain name.
+                if (url1.sameFile(url2) || url1.getHost().equals(url2.getHost())) {
+                    return true;
+                }
+            } catch (Exception ignore) {
+                // Ignore MalformedURLException or other exceptions
+            }
+        }
+
+        return false;
+    }
+
+    private String rewriteUrl(String url) {
+        if (url != null && url.startsWith(SdkRepoConstants.URL_GOOGLE_SDK_SITE)) {
+            url = url.replaceAll("repository-[0-9]+\\.xml^",    //$NON-NLS-1$
+                                 "repository.xml");             //$NON-NLS-1$
+        }
+        return url;
     }
 
     private PkgCategory findCurrentCategory(
